@@ -8,16 +8,15 @@ from urllib.parse import quote
 
 import time
 import pandas as pd
+import re
 
-external_stylesheets = ['https://codepen.io/chriddyp/pen/bWLwgP.css']
-
-app = dash.Dash(__name__, external_stylesheets=external_stylesheets)
+app = dash.Dash(__name__)
 app.title = "AirDePanache"
 
 init = False
 
 data = data = pd.read_excel("data.xls",skiprows=5,skipfooter=2)
-bon_value = None
+keyword_value = None
 price_range = [0, int(data["PRICE € excluding VAT"].max()+1)]
 nature = None
 contenance = None
@@ -25,10 +24,11 @@ contenance = None
 app.layout = html.Div(children=[
     html.Div(id="hidden-div"),
     dcc.Input(
-            id='brand_or_name',
+            id='keyword',
             debounce=True,
             placeholder="mots-clés",
-            value=bon_value
+            value=keyword_value,
+            style={'width': 130, 'height': 30}
         ),
     html.Div(children=[
         dcc.RangeSlider(
@@ -44,7 +44,7 @@ app.layout = html.Div(children=[
             id='contenance',
             debounce=True,
             placeholder="contenance(mL)",
-            style={'width': 130, 'height': 35}
+            style={'width': 130, 'height': 30}
         ),
     dcc.Dropdown(
         id='nature',
@@ -54,6 +54,7 @@ app.layout = html.Div(children=[
             {'label': 'eau de parfum', 'value': 'EDP'},
             {'label': 'pur parfum', 'value': 'PP'},
             {'label': 'déodorant', 'value': 'DEO'},
+            {'label': 'coffret', 'value': '+'},
             {'label': 'tout', 'value': ''}
         ],
         searchable=False,
@@ -63,6 +64,7 @@ app.layout = html.Div(children=[
         placeholder="nature du produit"
     ),
     html.Div(id='product_number_div',children="{} produits conservés".format(data.shape[0])),
+    html.A(children='Télécharger les données correspondantes aux critères' , id='download-chosen',download="filtered_data.csv", href="",target="_blank"),
     html.Div(children=[
         dash_table.DataTable(
         id='data_table',
@@ -86,20 +88,30 @@ app.layout = html.Div(children=[
     ],style={'width': 1200})
 ])
 
-data["mL"] = data["ITEM DESCRIPTION"].apply(lambda x:x.split(" ")[-1][:-2])
+def get_mL(s):
+    p = re.compile("\ ([0-9]+)[M|m][L|l]")
+    res = p.findall(s)
+    if res:
+        return sum([int(i) for i in res])
+    else:
+        return None
+
+data["mL"] = data["ITEM DESCRIPTION"].apply(get_mL)
+
 
 @app.callback([Output('data_table','data'),
                Output('price_range_value','children'),
                Output('product_number_div','children'),
+               Output('download-chosen', 'href')
                ],
-             [Input('brand_or_name','value'),
+             [Input('keyword','value'),
               Input('price_range_slider','value'),
               Input('nature','value'),
               Input('contenance','value')])
-def main_callback(bon_value_input,price_range_input,nature_input,contenance_input):
+def main_callback(keyword_input,price_range_input,nature_input,contenance_input):
     global init
     global temp_data
-    global bon_value
+    global keyword_value
     global price_range
     global nature
     global contenance
@@ -108,16 +120,18 @@ def main_callback(bon_value_input,price_range_input,nature_input,contenance_inpu
         temp_data = data.copy()
         init = True
 
-    elif bon_value_input != bon_value or price_range_input != price_range or nature_input != nature or contenance_input != contenance:
+    elif keyword_input != keyword_value or price_range_input != price_range or nature_input != nature or contenance_input != contenance:
         temp_data = data.copy()
 
-        if bon_value_input is None or bon_value_input=="":
+        if keyword_input is None or keyword_input=="":
             temp_data["MATCH_KEYWORD"] = True
         else:
-            temp_data["MATCH_KEYWORD"] = temp_data['ITEM DESCRIPTION'].apply(lambda x:all([v.upper() in x for v in bon_value_input.split(" ")]))
+            temp_data["MATCH_KEYWORD"] = temp_data['ITEM DESCRIPTION'].apply(lambda x:all([v.upper() in x.upper() for v in keyword_input.split(" ")]))
 
         if nature_input is None or nature_input=="":
             temp_data["MATCH_NATURE"] = True
+        elif nature_input == "DEO":
+            temp_data["MATCH_NATURE"] = temp_data['ITEM DESCRIPTION'].apply(lambda x:any([v in x.upper() for v in ["DEO","(D)"]]))
         else:
             temp_data["MATCH_NATURE"] = temp_data['ITEM DESCRIPTION'].apply(lambda x:nature_input in x)
 
@@ -126,16 +140,20 @@ def main_callback(bon_value_input,price_range_input,nature_input,contenance_inpu
         if contenance_input is None or contenance_input=="":
             temp_data["MATCH_CONTENANCE"] = True
         else:
-            temp_data["MATCH_CONTENANCE"] = temp_data['mL'].apply(lambda x:x==contenance_input)
+            temp_data["MATCH_CONTENANCE"] = temp_data['mL'].apply(lambda x:x==int(contenance_input))
 
         temp_data = temp_data[(temp_data["MATCH_KEYWORD"])&(temp_data["MATCH_NATURE"])&(temp_data["MATCH_PRICE"])&(temp_data["MATCH_CONTENANCE"])].copy()
 
-        bon_value = bon_value_input
+        keyword_value = keyword_input
         price_range = price_range_input
         nature = nature_input
         contenance = contenance_input
+
+
+    csv_string = "data:text/csv;charset=utf-8," + quote(temp_data[["EAN","ITEM DESCRIPTION","STOCK","PRICE € excluding VAT","ORDER","VALUE € excluding VAT"]].
+    to_csv(index=False,sep=";",float_format='%.15f')) 
     
-    return temp_data.to_dict('records'),"prix entre {}€ et {}€".format(price_range[0],price_range[1]),"{} produits conservés".format(temp_data.shape[0])
+    return temp_data.to_dict('records'),"prix entre {}€ et {}€".format(price_range[0],price_range[1]),"{} produits conservés".format(temp_data.shape[0]),csv_string
 
 if __name__ == '__main__':
     # En local
